@@ -1,214 +1,231 @@
-import streamlit as st
-import numpy as np
+import dash
+from dash import dcc, html, Input, Output, State, dash_table
 import pandas as pd
 import yfinance as yf
-import matplotlib.pyplot as plt
-import pdfplumber
-import re
-from scipy.optimize import minimize
-
-st.set_page_config(page_title="TERMINAL.ALPHA v22.0", layout="wide")
+import numpy as np
+import plotly.graph_objs as go
 
 # --------------------------
-# STRICT PDF PARSER (NO FAKES)
+# Dash App Initialization
 # --------------------------
-def parse_portfolio_to_tickers(pdf_file):
-    text = ""
-    with pdfplumber.open(pdf_file) as pdf:
-        for page in pdf.pages:
-            content = page.extract_text()
-            if content:
-                text += content + " "
-    
-    # 1. Regex for ISINs (Most reliable for Trade Republic/European Banks)
-    # Example: LU1681043599 or US67066G1040
-    isins = re.findall(r"[A-Z]{2}[A-Z0-9]{9}\d", text)
-    
-    # 2. Regex for Ticker Symbols (3-5 Uppercase letters usually followed by price)
-    # This is a fallback but ISIN is preferred.
-    potential_tickers = re.findall(r"\b[A-Z]{3,5}\b", text)
-    
-    # Filter out common non-ticker words found in PDFs
-    blacklist = ['ISIN', 'PAGE', 'DATE', 'CASH', 'TOTAL', 'PORTFOLIO', 'TRADE', 'REPUBLIC']
-    clean_tickers = [t for t in potential_tickers if t not in blacklist]
-    
-    # Combine and unique
-    final_list = list(set(isins + clean_tickers))
-    return final_list
+app = dash.Dash(__name__)
+server = app.server
+app.title = "Premium Investing Dashboard"
 
 # --------------------------
-# SIDEBAR
+# Layout
 # --------------------------
-st.sidebar.title("TERMINAL.ALPHA")
-uploaded = st.sidebar.file_uploader("Upload your Portfolio PDF", type="pdf")
+app.layout = html.Div(style={'backgroundColor': '#0e1117', 'color': '#fff', 'font-family': 'Arial'}, children=[
+    html.H1("💹 Premium Investing Dashboard", style={'textAlign': 'center', 'color': 'cyan'}),
+    
+    html.Div([
+        html.H3("Upload Your Portfolio CSV"),
+        dcc.Upload(
+            id='upload-data',
+            children=html.Div([
+                'Drag and Drop or ', html.A('Select CSV File')
+            ]),
+            style={
+                'width': '100%', 'height': '60px', 'lineHeight': '60px',
+                'borderWidth': '1px', 'borderStyle': 'dashed', 'borderRadius': '5px',
+                'textAlign': 'center', 'margin-bottom': '20px', 'color':'#fff'
+            },
+            multiple=False
+        ),
+    ]),
+
+    html.Div(id='portfolio-table'),
+    
+    html.Hr(style={'border-color':'#444'}),
+    
+    html.Div([
+        html.H2("Portfolio Allocation Treemap", style={'color':'cyan'}),
+        dcc.Graph(id='treemap')
+    ]),
+
+    html.Hr(style={'border-color':'#444'}),
+
+    html.Div([
+        html.H2("Monte Carlo Simulation", style={'color':'cyan'}),
+        html.Label("Simulation Horizon (Years)"),
+        dcc.Slider(id='years-slider', min=1, max=10, step=1, value=5),
+        html.Label("Number of Simulations"),
+        dcc.Slider(id='simulations-slider', min=1000, max=5000, step=500, value=2000),
+        html.Label("Expected Annual Return (%)"),
+        dcc.Input(id='mean-return', type='number', value=7, style={'margin-right':'20px'}),
+        html.Label("Annual Volatility (%)"),
+        dcc.Input(id='volatility', type='number', value=15),
+        dcc.Graph(id='monte-carlo-graph'),
+        html.Div(id='simulation-stats', style={'margin-top':'20px'})
+    ]),
+
+    html.Hr(style={'border-color':'#444'}),
+
+    html.Div([
+        html.H2("ETF Overlap & Sector/Country Exposure", style={'color':'cyan'}),
+        dash_table.DataTable(id='overlap-table', style_table={'overflowX': 'auto'},
+                             style_header={'backgroundColor':'#1f2937', 'color':'#fff'},
+                             style_cell={'backgroundColor':'#0e1117', 'color':'#fff'}),
+        dcc.Graph(id='sector-bar'),
+        dcc.Graph(id='country-pie')
+    ]),
+
+    html.Hr(style={'border-color':'#444'}),
+
+    html.Div([
+        html.H2("Stock Research Tool", style={'color':'cyan'}),
+        html.Label("Enter Ticker:"),
+        dcc.Input(id='ticker-input', type='text', value='AAPL'),
+        html.Div(id='stock-research')
+    ])
+])
 
 # --------------------------
-# CORE LOGIC
+# Callbacks
 # --------------------------
-if uploaded:
-    user_tickers = parse_portfolio_to_tickers(uploaded)
-    
-    if not user_tickers:
-        st.error("No tickers or ISINs identified in the PDF. Please ensure it is a standard statement.")
-        st.stop()
-        
-    st.sidebar.success(f"Identified {len(user_tickers)} Assets")
-    
-    # Load Real Data from Yahoo Finance
-    @st.cache_data(ttl=3600)
-    def get_fin_data(t_list):
-        # We fetch 2 years to get enough covariance data
-        df = yf.download(t_list, period="2y", progress=False)["Close"]
-        # Drop columns that failed to download
-        return df.dropna(axis=1, how='all')
 
-    df_prices = get_fin_data(user_tickers)
-    
-    if df_prices.empty:
-        st.error("Could not fetch market data for the identified symbols.")
-        st.stop()
+# Parse uploaded CSV
+def parse_contents(contents):
+    content_type, content_string = contents.split(',')
+    import base64, io
+    decoded = base64.b64decode(content_string)
+    return pd.read_csv(io.StringIO(decoded.decode('utf-8')))
 
-    # Metrics Calculations
-    returns = df_prices.pct_change().dropna()
-    mean_returns = returns.mean() * 252
-    cov_matrix = returns.cov() * 252
-    n_assets = len(df_prices.columns)
-    tickers = df_prices.columns.tolist()
+# --------------------------
+# Portfolio Callback
+# --------------------------
+@app.callback(
+    Output('portfolio-table', 'children'),
+    Output('treemap', 'figure'),
+    Output('monte-carlo-graph', 'figure'),
+    Output('simulation-stats', 'children'),
+    Output('overlap-table', 'data'),
+    Output('sector-bar', 'figure'),
+    Output('country-pie', 'figure'),
+    Input('upload-data', 'contents'),
+    State('years-slider', 'value'),
+    State('simulations-slider', 'value'),
+    State('mean-return', 'value'),
+    State('volatility', 'value')
+)
+def update_portfolio(contents, years, simulations, mean_return, volatility):
+    if contents is None:
+        return html.Div(), go.Figure(), go.Figure(), "", [], go.Figure(), go.Figure()
 
-    # --------------------------
-    # STRATEGY FUNCTIONS
-    # --------------------------
-    def get_weights(strat_name, personal_view=0.05):
-        if strat_name in ["Buy & Hold", "Equally Weighted"]:
-            return np.ones(n_assets) / n_assets
+    df = parse_contents(contents)
 
-        elif strat_name == "Quintile Portfolio":
-            top_n = max(1, n_assets // 5)
-            top_indices = mean_returns.nlargest(top_n).index
-            w = np.array([1.0 if t in top_indices else 0.0 for t in tickers])
-            return w / w.sum()
+    # Live prices
+    def get_price(ticker):
+        try:
+            return yf.Ticker(ticker).history(period="1d")['Close'].iloc[-1]
+        except:
+            return np.nan
+    df['Live Price'] = df['Ticker (Yahoo Finance)'].apply(get_price)
+    df['Market Value'] = df['Uni. / Nominal'] * df['Live Price']
+    df['Weight'] = df['Market Value'] / df['Market Value'].sum()
 
-        elif strat_name == "Markowitz MVP":
-            # Minimize variance for a specific target return
-            target = mean_returns.mean()
-            cons = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1},
-                    {'type': 'eq', 'fun': lambda x: x @ mean_returns - target})
-            res = minimize(lambda w: w.T @ cov_matrix @ w, n_assets*[1./n_assets], 
-                           bounds=[(0,1)]*n_assets, constraints=cons)
-            return res.x
+    table_div = dash_table.DataTable(
+        columns=[{"name": i, "id": i} for i in df.columns],
+        data=df.to_dict('records'),
+        style_table={'overflowX': 'auto'},
+        style_header={'backgroundColor':'#1f2937', 'color':'#fff'},
+        style_cell={'backgroundColor':'#0e1117', 'color':'#fff'}
+    )
 
-        elif strat_name == "GMVP":
-            # Global Minimum Variance
-            cons = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
-            res = minimize(lambda w: np.sqrt(w.T @ cov_matrix @ w), n_assets*[1./n_assets], 
-                           bounds=[(0,1)]*n_assets, constraints=cons)
-            return res.x
+    # Treemap
+    treemap_fig = go.Figure(go.Treemap(
+        labels=df['Nome do Título'],
+        values=df['Market Value'],
+        hovertext=df['Ticker (Yahoo Finance)'],
+        marker=dict(colors=df['Weight'], colorscale='Viridis')
+    ))
 
-        elif strat_name == "Max Sharpe (MSRP)":
-            cons = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
-            def min_func_sharpe(w):
-                p_ret = w @ mean_returns
-                p_vol = np.sqrt(w.T @ cov_matrix @ w)
-                return -(p_ret / p_vol)
-            res = minimize(min_func_sharpe, n_assets*[1./n_assets], 
-                           bounds=[(0,1)]*n_assets, constraints=cons)
-            return res.x
+    # Monte Carlo
+    T = years
+    dt = 1
+    mean = mean_return / 100
+    sigma = volatility / 100
+    S0 = df['Market Value'].sum()
+    sim_matrix = np.zeros((T, simulations))
+    sim_matrix[0] = S0
+    for t in range(1,T):
+        rand = np.random.standard_normal(simulations)
+        sim_matrix[t] = sim_matrix[t-1] * np.exp((mean - 0.5*sigma**2)*dt + sigma*np.sqrt(dt)*rand)
+    mc_fig = go.Figure()
+    for i in range(min(simulations,200)):
+        mc_fig.add_trace(go.Scatter(y=sim_matrix[:,i], mode='lines', line=dict(color='cyan', width=1), opacity=0.2))
+    mc_fig.update_layout(plot_bgcolor="#0e1117", paper_bgcolor="#0e1117", font_color="#fff",
+                         xaxis_title="Years", yaxis_title="Portfolio Value")
+    stats_div = f"""
+    Mean final value: ${sim_matrix[-1].mean():,.2f} | Median: ${np.median(sim_matrix[-1]):,.2f} |
+    10th percentile: ${np.percentile(sim_matrix[-1],10):,.2f} | 90th percentile: ${np.percentile(sim_matrix[-1],90):,.2f}
+    """
 
-        elif strat_name == "Inverse Volatility":
-            vols = returns.std() * np.sqrt(252)
-            inv_vols = 1 / vols
-            return inv_vols / inv_vols.sum()
+    # ETF Overlap
+    etf_rows = df[df['Nome do Título'].str.contains("ETF|Swap", case=False, regex=True)]
+    overlap_dict = {}
+    for idx,row in etf_rows.iterrows():
+        try:
+            etf = yf.Ticker(row['Ticker (Yahoo Finance)'])
+            holdings = etf.fund_holdings
+            if holdings is not None and not holdings.empty:
+                holdings_df = pd.DataFrame(holdings)
+                holdings_df.rename(columns={'symbol':'Ticker','holdingPercent':'Weight'}, inplace=True)
+                for tck in holdings_df['Ticker']:
+                    overlap_dict[tck] = overlap_dict.get(tck,0)+row['Weight']
+        except: pass
+    overlap_df = pd.DataFrame(list(overlap_dict.items()), columns=['Ticker','Portfolio_Weight']).sort_values('Portfolio_Weight', ascending=False)
 
-        elif strat_name == "Black-Litterman":
-            # Equilibrium weights modified by personal view tilt
-            w_eq = np.ones(n_assets) / n_assets
-            # Tilt toward the asset with highest historical return
-            tilt = np.zeros(n_assets)
-            tilt[np.argmax(mean_returns)] = personal_view
-            w = w_eq + tilt
-            return w / w.sum()
+    # Sector/Country Exposure
+    sectors, countries = [], []
+    for ticker in df['Ticker (Yahoo Finance)']:
+        try:
+            info = yf.Ticker(ticker).info
+            sectors.append(info.get('sector','Unknown'))
+            countries.append(info.get('country','Unknown'))
+        except: 
+            sectors.append('Unknown')
+            countries.append('Unknown')
+    df['Sector'] = sectors
+    df['Country'] = countries
 
-    # --------------------------
-    # TABS / UI
-    # --------------------------
-    tab1, tab2, tab3 = st.tabs(["📊 Portfolio Dashboard", "📈 Markowitz Frontier", "🎲 Strategy Lab"])
+    sector_weights = df.groupby('Sector')['Weight'].sum().reset_index()
+    sector_fig = go.Figure(go.Bar(x=sector_weights['Sector'], y=sector_weights['Weight'], marker_color='cyan'))
+    sector_fig.update_layout(plot_bgcolor="#0e1117", paper_bgcolor="#0e1117", font_color="#fff", title="Sector Exposure")
 
-    with tab1:
-        st.title("Executive Dashboard")
-        col1, col2, col3, col4 = st.columns(4)
-        
-        # Real-time Market Context
-        m_spx = yf.Ticker("^GSPC").history(period="1d")["Close"].iloc[-1]
-        m_vix = yf.Ticker("^VIX").history(period="1d")["Close"].iloc[-1]
-        
-        col1.metric("Your Assets", n_assets)
-        col2.metric("S&P 500", f"{m_spx:,.2f}")
-        col3.metric("VIX", f"{m_vix:.2f}")
-        col4.metric("Current Value Base", "€6,000")
-        
-        st.subheader("Your Asset Relative Performance")
-        st.line_chart(df_prices / df_prices.iloc[0])
+    country_weights = df.groupby('Country')['Weight'].sum().reset_index()
+    country_fig = go.Figure(go.Pie(labels=country_weights['Country'], values=country_weights['Weight'], hole=0.4))
+    country_fig.update_layout(plot_bgcolor="#0e1117", paper_bgcolor="#0e1117", font_color="#fff", title="Country Exposure")
 
-    with tab2:
-        st.subheader("Efficient Frontier Analysis")
-        
-        # Random portfolios for visualization
-        n_sim = 1000
-        sim_res = np.zeros((3, n_sim))
-        for i in range(n_sim):
-            w = np.random.random(n_assets)
-            w /= np.sum(w)
-            sim_res[0,i] = np.sqrt(w.T @ cov_matrix @ w)
-            sim_res[1,i] = np.sum(mean_returns * w)
-            sim_res[2,i] = sim_res[1,i] / sim_res[0,i]
-            
-        fig, ax = plt.subplots()
-        plt.style.use('dark_background')
-        ax.scatter(sim_res[0,:], sim_res[1,:], c=sim_res[2,:], cmap='viridis', s=5)
-        ax.set_xlabel("Volatility (Risk)")
-        ax.set_ylabel("Expected Return")
-        st.pyplot(fig)
+    return table_div, treemap_fig, mc_fig, stats_div, overlap_df.to_dict('records'), sector_fig, country_fig
 
-    with tab3:
-        st.subheader("Strategy Lab")
-        selected_strat = st.selectbox("Choose Optimization Model", [
-            "Buy & Hold", "Equally Weighted", "Quintile Portfolio", 
-            "Markowitz MVP", "GMVP", "Max Sharpe (MSRP)", 
-            "Inverse Volatility", "Black-Litterman"
-        ])
-        
-        view_tilt = 0.05
-        if selected_strat == "Black-Litterman":
-            view_tilt = st.slider("Personal View Bullish Tilt", 0.0, 0.3, 0.05)
+# --------------------------
+# Stock Research Callback
+# --------------------------
+@app.callback(
+    Output('stock-research','children'),
+    Input('ticker-input','value')
+)
+def stock_research(ticker):
+    if ticker:
+        try:
+            t = yf.Ticker(ticker)
+            price = t.history(period="1d")['Close'].iloc[-1]
+            market_cap = t.info.get('marketCap','N/A')
+            pe = t.info.get('trailingPE','N/A')
+            rating = t.info.get('recommendationKey','N/A')
+            return html.Div([
+                html.P(f"**Current Price:** {price}"),
+                html.P(f"**Market Cap:** {market_cap}"),
+                html.P(f"**P/E Ratio:** {pe}"),
+                html.P(f"**Analyst Ratings:** {rating}")
+            ])
+        except:
+            return "Data not available."
+    return ""
 
-        opt_weights = get_weights(selected_strat, view_tilt)
-        
-        # Display Results Table
-        res_df = pd.DataFrame({
-            "Asset": tickers,
-            "Optimal Allocation": [f"{w*100:.2f}%" for w in opt_weights]
-        })
-        st.table(res_df)
-
-        # Monte Carlo Simulation
-        st.subheader("Future Value Projection (Monte Carlo)")
-        def run_mc(w):
-            sim_paths = []
-            for _ in range(30):
-                prices = [6000]
-                for _ in range(252):
-                    # Daily returns based on historical covariance
-                    daily_ret = np.random.multivariate_normal(mean_returns/252, cov_matrix/252)
-                    prices.append(prices[-1] * (1 + np.dot(w, daily_ret)))
-                sim_paths.append(prices)
-            return sim_paths
-
-        paths = run_mc(opt_weights)
-        fig2, ax2 = plt.subplots()
-        for p in paths:
-            ax2.plot(p, color='#00ff88', alpha=0.2)
-        ax2.set_title(f"30 Simulated Outcomes for {selected_strat}")
-        st.pyplot(fig2)
-
-else:
-    st.info("Waiting for PDF upload... Please upload your Trade Republic statement in the sidebar to begin analysis.")
+# --------------------------
+# Run App
+# --------------------------
+if __name__ == '__main__':
+    app.run_server(debug=True)
