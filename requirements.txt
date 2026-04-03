@@ -4,3 +4,4 @@ pandas
 yfinance
 numpy
 plotly
+gunicorn
