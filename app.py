@@ -1,3 +1,4 @@
+pip install streamlit yfinance numpy pandas matplotlib pdfplumber
 import streamlit as st
 import numpy as np
 import pandas as pd
