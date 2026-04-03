@@ -1,5 +1,7 @@
-dash
-pandas
-yfinance
-numpy
-plotly
+dash==2.13.0
+pandas==2.1.1
+yfinance==0.2.25
+numpy==1.26.5
+plotly==5.16.1
+flask==2.3.6
+waitress==2.2.1
