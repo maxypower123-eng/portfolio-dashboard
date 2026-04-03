@@ -4,22 +4,16 @@ import pandas as pd
 import yfinance as yf
 import numpy as np
 import plotly.graph_objs as go
-from flask import Flask
 import os
 
 # ------------------------
-# Flask Server
+# INIT
 # ------------------------
-server = Flask(__name__)
+app = dash.Dash(__name__)
+server = app.server
 
 # ------------------------
-# Dash App
-# ------------------------
-app = dash.Dash(__name__, server=server)
-app.title = "Premium Investing Dashboard"
-
-# ------------------------
-# DEMO PORTFOLIO (replace later)
+# DEMO DATA (safe start)
 # ------------------------
 df_portfolio = pd.DataFrame({
     "Nome do Título": ["Apple", "Microsoft", "NVIDIA", "S&P 500 ETF"],
@@ -28,7 +22,7 @@ df_portfolio = pd.DataFrame({
 })
 
 # ------------------------
-# Helper
+# HELPER
 # ------------------------
 def get_price(ticker):
     try:
@@ -37,7 +31,7 @@ def get_price(ticker):
         return np.nan
 
 # ------------------------
-# Layout
+# LAYOUT
 # ------------------------
 app.layout = html.Div(style={'backgroundColor': '#0e1117', 'color': '#fff'}, children=[
 
@@ -62,7 +56,7 @@ app.layout = html.Div(style={'backgroundColor': '#0e1117', 'color': '#fff'}, chi
 ])
 
 # ------------------------
-# Callback
+# CALLBACK
 # ------------------------
 @app.callback(
     Output('portfolio-table','children'),
@@ -113,8 +107,7 @@ def update(years, sims):
     return table, treemap, mc_fig, stats
 
 # ------------------------
-# Run (Vercel)
+# RUN (LOCAL ONLY)
 # ------------------------
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8050))
-    app.run_server(host="0.0.0.0", port=port)
+    app.run_server(debug=True)
