@@ -1,7 +1,5 @@
-streamlit
+dash
+pandas
 yfinance
 numpy
-pandas
-matplotlib
-pdfplumber
-scipy
+plotly
