@@ -1,4 +1,3 @@
-pip install streamlit yfinance numpy pandas matplotlib pdfplumber
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -7,237 +6,157 @@ import matplotlib.pyplot as plt
 import pdfplumber
 import re
 
-st.set_page_config(layout="wide")
+# Page config must be the first streamlit command
+st.set_page_config(page_title="TERMINAL.ALPHA", layout="wide")
 
 # --------------------------
-# PDF PARSER
+# PDF PARSER ENGINE
 # --------------------------
 def parse_portfolio(pdf_file):
     text = ""
-    with pdfplumber.open(pdf_file) as pdf:
-        for page in pdf.pages:
-            if page.extract_text():
-                text += page.extract_text()
+    try:
+        with pdfplumber.open(pdf_file) as pdf:
+            for page in pdf.pages:
+                content = page.extract_text()
+                if content:
+                    text += content
+    except Exception as e:
+        st.error(f"Error reading PDF: {e}")
+        return ["AAPL", "MSFT", "NVDA"]
 
-    matches = re.findall(r"[A-Z][A-Za-z0-9\\s\\.\\-]{3,40}", text)
-    assets = list(set(matches))[:15]
-
-    mapping = {
-        "NVIDIA": "NVDA",
-        "Apple": "AAPL",
-        "Microsoft": "MSFT",
-        "Tesla": "TSLA",
-        "Amazon": "AMZN",
-        "Visa": "V",
-        "BYD": "BYDDF",
-        "Deutsche": "DB",
-        "Airbus": "AIR.PA"
-    }
-
-    tickers = []
-    for a in assets:
-        for key in mapping:
-            if key.lower() in a.lower():
-                tickers.append(mapping[key])
-
-    return list(set(tickers)) if tickers else ["AAPL","MSFT","NVDA"]
+    # Improved regex to find potential tickers/company names
+    matches = re.findall(r"\b[A-Z]{2,5}\b", text) 
+    found_tickers = list(set(matches))
+    
+    # Filter for known common tickers or return defaults if empty
+    valid_defaults = ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "TSLA"]
+    selected = [t for t in found_tickers if t in valid_defaults]
+    
+    return selected if len(selected) > 0 else ["AAPL", "MSFT", "NVDA"]
 
 # --------------------------
-# SIDEBAR
+# SIDEBAR & INPUTS
 # --------------------------
-st.sidebar.title("TERMINAL.ALPHA")
+st.sidebar.title("TERMINAL.ALPHA v20.0")
+st.sidebar.info("Upload your Trade Republic or Bank PDF to sync assets.")
 
-uploaded = st.sidebar.file_uploader("Upload Portfolio PDF")
+uploaded = st.sidebar.file_uploader("Upload Portfolio PDF", type="pdf")
 
 if uploaded:
     tickers = parse_portfolio(uploaded)
+    st.sidebar.success(f"Extracted: {', '.join(tickers)}")
 else:
-    tickers = ["AAPL","MSFT","NVDA"]
+    tickers = ["AAPL", "MSFT", "NVDA", "GOOGL", "TSLA"]
 
-page = st.sidebar.selectbox("Navigation", ["Portfolio", "Markowitz", "Strategies"])
+page = st.sidebar.selectbox("Navigation", ["Portfolio Dashboard", "Markowitz Optimization", "Strategy Comparison"])
 
 # --------------------------
-# LOAD DATA
+# DATA CACHING (Crucial for Streamlit)
 # --------------------------
-data = yf.download(tickers, period="1y")["Close"]
+@st.cache_data(ttl=3600)
+def load_data(ticker_list):
+    df = yf.download(ticker_list, period="1y")["Close"]
+    return df
+
+data = load_data(tickers)
 returns = data.pct_change().dropna()
 
 # --------------------------
 # PAGE 1 — PORTFOLIO
 # --------------------------
-if page == "Portfolio":
-    st.title("📊 Portfolio Dashboard")
+if page == "Portfolio Dashboard":
+    st.title("📊 Executive Dashboard")
 
-    col1, col2, col3, col4 = st.columns(4)
+    # Market Tickers
+    m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+    
+    @st.cache_data(ttl=300)
+    def get_market_stats():
+        indices = {"S&P 500": "^GSPC", "VIX": "^VIX", "Gold": "GC=F", "Oil": "CL=F"}
+        stats = {}
+        for name, t in indices.items():
+            stats[name] = yf.Ticker(t).history(period="1d")["Close"].iloc[-1]
+        return stats
 
-    spx = yf.Ticker("^GSPC").history(period="1d")["Close"].iloc[-1]
-    vix = yf.Ticker("^VIX").history(period="1d")["Close"].iloc[-1]
-    gold = yf.Ticker("GC=F").history(period="1d")["Close"].iloc[-1]
-    oil = yf.Ticker("CL=F").history(period="1d")["Close"].iloc[-1]
+    m_data = get_market_stats()
+    m_col1.metric("S&P 500", f"{m_data['S&P 500']:.2f}")
+    m_col2.metric("VIX", f"{m_data['VIX']:.2f}")
+    m_col3.metric("Gold", f"${m_data['Gold']:.2f}")
+    m_col4.metric("Oil", f"${m_data['Oil']:.2f}")
 
-    col1.metric("S&P 500", round(spx, 2))
-    col2.metric("VIX", round(vix, 2))
-    col3.metric("Gold", round(gold, 2))
-    col4.metric("Oil", round(oil, 2))
-
-    st.subheader("Your Portfolio")
-    st.write(tickers)
-
+    st.subheader("Historical Performance")
     st.line_chart(data)
 
 # --------------------------
 # PAGE 2 — MARKOWITZ
 # --------------------------
-elif page == "Markowitz":
-    st.title("📉 Markowitz Optimization")
-
+elif page == "Markowitz Optimization":
+    st.title("📉 Efficient Frontier")
+    
+    
     mean_returns = returns.mean()
     cov = returns.cov()
+    num_portfolios = 2000
+    results = np.zeros((3, num_portfolios))
 
-    results = []
+    for i in range(num_portfolios):
+        weights = np.random.random(len(tickers))
+        weights /= np.sum(weights)
+        
+        portfolio_return = np.sum(mean_returns * weights) * 252
+        portfolio_std = np.sqrt(np.dot(weights.T, np.dot(cov * 252, weights)))
+        
+        results[0,i] = portfolio_std
+        results[1,i] = portfolio_return
+        results[2,i] = results[1,i] / results[0,i] # Sharpe Ratio
 
-    for _ in range(5000):
-        w = np.random.random(len(tickers))
-        w /= w.sum()
-
-        ret = np.dot(w, mean_returns)
-        vol = np.sqrt(np.dot(w.T, np.dot(cov, w)))
-
-        results.append([vol, ret])
-
-    results = np.array(results)
-
-    fig, ax = plt.subplots()
-    ax.scatter(results[:,0], results[:,1], alpha=0.3)
-    ax.set_xlabel("Risk")
-    ax.set_ylabel("Return")
+    fig, ax = plt.subplots(figsize=(10, 6))
+    plt.style.use('dark_background')
+    scatter = ax.scatter(results[0,i], results[1,i], c=results[2,i], cmap='viridis', alpha=0.5)
+    ax.set_xlabel('Annualized Volatility')
+    ax.set_ylabel('Annualized Returns')
     st.pyplot(fig)
 
 # --------------------------
 # PAGE 3 — STRATEGIES
 # --------------------------
-elif page == "Strategies":
-    st.title("🎲 Advanced Portfolio Strategies")
-
-    mean_returns = returns.mean()
-    cov = returns.cov()
+elif page == "Strategy Comparison":
+    st.title("🎲 Monte Carlo & Strategy Drill-down")
+    
     n = len(tickers)
+    mean_rets = returns.mean()
+    cov_mat = returns.cov()
 
-    def equal_weight():
-        return np.ones(n)/n
+    # Define Strategies
+    weights_eq = np.ones(n)/n
+    inv_vol = 1/returns.std()
+    weights_iv = inv_vol / inv_vol.sum()
 
-    def inverse_vol():
-        vol = returns.std()
-        w = 1/vol
-        return w/w.sum()
+    strat_choice = st.radio("Select Allocation Engine", ["Equal Weight", "Inverse Volatility"])
+    active_w = weights_eq if strat_choice == "Equal Weight" else weights_iv
 
-    def gmvp():
-        inv = np.linalg.inv(cov)
-        ones = np.ones(n)
-        w = inv @ ones
-        return w/w.sum()
+    # Monte Carlo
+    st.subheader(f"Monte Carlo Simulation: {strat_choice}")
+    
+    def run_sim(w):
+        sim_paths = []
+        for _ in range(30):
+            prices = [6000]
+            for _ in range(252):
+                daily_ret = np.dot(w, np.random.multivariate_normal(mean_rets, cov_mat))
+                prices.append(prices[-1] * (1 + daily_ret))
+            sim_paths.append(prices)
+        return np.array(sim_paths)
 
-    def max_sharpe():
-        best_w = None
-        best_sr = -1
-        for _ in range(3000):
-            w = np.random.random(n)
-            w /= w.sum()
-            ret = w @ mean_returns
-            vol = np.sqrt(w @ cov @ w)
-            sr = ret/vol
-            if sr > best_sr:
-                best_sr = sr
-                best_w = w
-        return best_w
-
-    def quintile():
-        perf = mean_returns.sort_values()
-        top = perf.index[int(0.8*len(perf)):]
-        w = np.zeros(n)
-        for i,t in enumerate(tickers):
-            if t in top:
-                w[i]=1
-        return w/w.sum()
-
-    def markowitz():
-        best_w = None
-        best_ret = -1
-        for _ in range(3000):
-            w = np.random.random(n)
-            w /= w.sum()
-            ret = w @ mean_returns
-            vol = np.sqrt(w @ cov @ w)
-            if vol < 0.2 and ret > best_ret:
-                best_ret = ret
-                best_w = w
-        return best_w
-
-    def black_litterman():
-        w_eq = equal_weight()
-        tilt = mean_returns.values
-        w = w_eq + 0.1*tilt
-        w = np.maximum(w,0)
-        return w/np.sum(w)
-
-    strategies = {
-        "Buy & Hold": equal_weight(),
-        "Equal Weight": equal_weight(),
-        "Inverse Volatility": inverse_vol(),
-        "GMVP": gmvp(),
-        "Max Sharpe": max_sharpe(),
-        "Quintile": quintile(),
-        "Markowitz MVP": markowitz(),
-        "Black-Litterman": black_litterman()
-    }
-
-    choice = st.selectbox("Select Strategy", list(strategies.keys()))
-    weights = strategies[choice]
-
-    st.subheader("Weights")
-    for t,w in zip(tickers,weights):
-        st.write(f"{t}: {round(w*100,2)}%")
-
-    def simulate(w):
-        paths=[]
-        for _ in range(100):
-            val=6000
-            series=[]
-            for _ in range(100):
-                rand=np.random.normal(0,1,n)
-                r = w @ (mean_returns + rand*returns.std())
-                val *= (1+r)
-                series.append(val)
-            paths.append(series)
-        return np.array(paths)
-
-    paths = simulate(weights)
-
-    st.subheader("Monte Carlo")
-
-    fig, ax = plt.subplots()
-    for p in paths[:30]:
-        ax.plot(p, alpha=0.2)
-    st.pyplot(fig)
-
-    st.subheader("Distribution")
-
-    final_vals = paths[:,-1]
-
+    paths = run_sim(active_w)
+    
     fig2, ax2 = plt.subplots()
-    ax2.hist(final_vals, bins=20)
+    for p in paths:
+        ax2.plot(p, color='#00ff88', alpha=0.2)
+    ax2.set_title("1-Year Predicted Value Path")
     st.pyplot(fig2)
 
-    st.subheader("Strategy Comparison")
-
-    names=[]
-    values=[]
-
-    for name,w in strategies.items():
-        sim = simulate(w)
-        names.append(name)
-        values.append(sim[:,-1].mean())
-
-    fig3, ax3 = plt.subplots()
-    ax3.barh(names, values)
-    st.pyplot(fig3)
+    # Sector/Asset Breakdown
+    st.subheader("Asset Allocation")
+    df_w = pd.DataFrame({'Asset': tickers, 'Weight': active_w})
+    st.bar_chart(df_w.set_index('Asset'))
