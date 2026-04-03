@@ -13,11 +13,13 @@ app = dash.Dash(__name__)
 server = app.server
 
 # ------------------------
-# LOAD CSV (IMPORTANT)
+# LOAD CSV
 # ------------------------
-try:
-    df_portfolio = pd.read_csv("Portfolio_PowerBI_Ready.csv")
-except:
+csv_path = "Portfolio_PowerBI_Ready.csv"
+
+if os.path.exists(csv_path):
+    df_portfolio = pd.read_csv(csv_path)
+else:
     df_portfolio = pd.DataFrame(columns=[
         "Nome do Título",
         "Ticker (Yahoo Finance)",
@@ -25,7 +27,7 @@ except:
     ])
 
 # ------------------------
-# HELPER
+# HELPER FUNCTION
 # ------------------------
 def get_price(ticker):
     try:
@@ -86,7 +88,7 @@ def update(years, sims):
     if df.empty:
         return "No portfolio data found.", go.Figure(), go.Figure(), ""
 
-    # Prices
+    # Fetch latest prices
     df['Price'] = df['Ticker (Yahoo Finance)'].apply(get_price)
     df['Value'] = df['Price'] * df['Uni. / Nominal']
     df['Weight'] = df['Value'] / df['Value'].sum()
@@ -152,7 +154,7 @@ def update(years, sims):
     return table, treemap, mc_fig, stats
 
 # ------------------------
-# RUN LOCAL
+# RUN LOCAL / RENDER
 # ------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8050))
